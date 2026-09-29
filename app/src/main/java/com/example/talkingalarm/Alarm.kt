@@ -13,6 +13,18 @@ import java.util.Locale
 
 const val EXTRA_ALARM_ID = "extra_alarm_id"
 
+/** How an alarm makes itself heard. */
+enum class SoundMode {
+    SPEECH,     // reads your text out loud
+    RINGTONE,   // plays a sound from your phone
+    BOTH;       // ringtone, then the text, alternating
+
+    companion object {
+        fun from(name: String?): SoundMode =
+            entries.firstOrNull { it.name == name } ?: SPEECH
+    }
+}
+
 /**
  * One alarm. [days] holds Calendar.SUNDAY..Calendar.SATURDAY values.
  * An empty [days] set means the alarm fires once and then switches itself off.
@@ -23,7 +35,10 @@ data class Alarm(
     val minute: Int,
     val text: String,
     val enabled: Boolean = true,
-    val days: Set<Int> = emptySet()
+    val days: Set<Int> = emptySet(),
+    val soundMode: SoundMode = SoundMode.SPEECH,
+    /** Empty means "use the phone's default alarm sound". */
+    val ringtoneUri: String = ""
 ) {
     val minutesOfDay: Int get() = hour * 60 + minute
 
@@ -122,6 +137,8 @@ object AlarmStore {
         put("text", a.text)
         put("enabled", a.enabled)
         put("days", JSONArray().also { arr -> a.days.forEach { arr.put(it) } })
+        put("soundMode", a.soundMode.name)
+        put("ringtoneUri", a.ringtoneUri)
     }
 
     private fun fromJson(o: JSONObject): Alarm {
@@ -134,7 +151,9 @@ object AlarmStore {
             minute = o.getInt("minute"),
             text = o.optString("text", ""),
             enabled = o.optBoolean("enabled", true),
-            days = days
+            days = days,
+            soundMode = SoundMode.from(o.optString("soundMode", SoundMode.SPEECH.name)),
+            ringtoneUri = o.optString("ringtoneUri", "")
         )
     }
 }

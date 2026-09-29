@@ -6,6 +6,18 @@ plugins {
 
 android {
     namespace = "com.example.talkingalarm"
+
+    // A fixed key, committed on purpose. Without it every cloud build would be signed
+    // with a throwaway key and Android would refuse to install updates over the old app.
+    // Fine for a personal app; you'd use a private key for anything published.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("keystore.jks")
+            storePassword = "talkingalarm"
+            keyAlias = "talkingalarm"
+            keyPassword = "talkingalarm"
+        }
+    }
     compileSdk = 34
 
     defaultConfig {

@@ -1,10 +1,12 @@
 package com.example.talkingalarm
 
 import android.Manifest
+import android.app.Activity
 import android.app.TimePickerDialog
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -12,6 +14,7 @@ import android.os.PowerManager
 import android.provider.Settings
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -39,6 +42,7 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -83,21 +87,23 @@ import java.util.Calendar
 
 class MainActivity : ComponentActivity() {
 
-    private val askNotifications =
-        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    private val askPermissions =
+        registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         AlarmStore.ensureLoaded(this)
         AlarmScheduler.rescheduleAll(this)
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) !=
-            PackageManager.PERMISSION_GRANTED
-        ) {
-            askNotifications.launch(Manifest.permission.POST_NOTIFICATIONS)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val wanted = listOf(
+                Manifest.permission.POST_NOTIFICATIONS,
+                Manifest.permission.READ_MEDIA_AUDIO
+            ).filter { checkSelfPermission(it) != PackageManager.PERMISSION_GRANTED }
+            if (wanted.isNotEmpty()) askPermissions.launch(wanted.toTypedArray())
         }
 
+        Speaker.warmUp(this)
         setContent { TalkingAlarmTheme { HomeScreen() } }
     }
 
@@ -121,7 +127,11 @@ fun HomeScreen() {
             TopAppBar(
                 title = {
                     Text(
-                        if (tab == 0) "Talking Alarm" else "Interval Timer",
+                        when (tab) {
+                            0 -> "Talking Alarm"
+                            1 -> "Interval Timer"
+                            else -> "Voice"
+                        },
                         fontWeight = FontWeight.SemiBold
                     )
                 },
@@ -145,6 +155,12 @@ fun HomeScreen() {
                     icon = { Icon(Icons.Default.Refresh, contentDescription = null) },
                     label = { Text("Timer") }
                 )
+                NavigationBarItem(
+                    selected = tab == 2,
+                    onClick = { tab = 2 },
+                    icon = { Icon(Icons.Default.Settings, contentDescription = null) },
+                    label = { Text("Voice") }
+                )
             }
         },
         floatingActionButton = {
@@ -160,7 +176,8 @@ fun HomeScreen() {
         Box(Modifier.padding(padding)) {
             when (tab) {
                 0 -> AlarmsContent(onEdit = { editing = it; editorOpen = true })
-                else -> IntervalScreen()
+                1 -> IntervalScreen()
+                else -> SettingsScreen()
             }
         }
     }
@@ -349,6 +366,19 @@ private fun AlarmEditor(
     var minute by remember { mutableIntStateOf(existing?.minute ?: 0) }
     var text by remember { mutableStateOf(existing?.text ?: "") }
     var days by remember { mutableStateOf(existing?.days ?: emptySet()) }
+    var mode by remember { mutableStateOf(existing?.soundMode ?: SoundMode.SPEECH) }
+    var ringtone by remember { mutableStateOf(existing?.ringtoneUri ?: "") }
+
+    val ringtonePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == Activity.RESULT_OK) {
+            @Suppress("DEPRECATION")
+            val picked = result.data
+                ?.getParcelableExtra<Uri>(RingtoneManager.EXTRA_RINGTONE_PICKED_URI)
+            ringtone = picked?.toString() ?: ""
+        }
+    }
 
     Dialog(
         onDismissRequest = onDismiss,
@@ -427,6 +457,65 @@ private fun AlarmEditor(
                 }
 
                 Spacer(Modifier.height(18.dp))
+                Text("Sound", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(8.dp))
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf(
+                        SoundMode.SPEECH to "Speak my text",
+                        SoundMode.RINGTONE to "Ringtone",
+                        SoundMode.BOTH to "Both"
+                    ).forEach { (option, label) ->
+                        FilterChip(
+                            selected = mode == option,
+                            onClick = { mode = option },
+                            label = { Text(label) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
+                                selectedLabelColor = MaterialTheme.colorScheme.onPrimaryContainer
+                            )
+                        )
+                    }
+                }
+
+                if (mode != SoundMode.SPEECH) {
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedButton(
+                        onClick = {
+                            ringtonePicker.launch(
+                                Intent(RingtoneManager.ACTION_RINGTONE_PICKER).apply {
+                                    putExtra(
+                                        RingtoneManager.EXTRA_RINGTONE_TYPE,
+                                        RingtoneManager.TYPE_ALARM or RingtoneManager.TYPE_RINGTONE
+                                    )
+                                    putExtra(RingtoneManager.EXTRA_RINGTONE_TITLE, "Pick an alarm sound")
+                                    putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_SILENT, false)
+                                    putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_DEFAULT, true)
+                                    putExtra(
+                                        RingtoneManager.EXTRA_RINGTONE_EXISTING_URI,
+                                        ringtone.takeIf { it.isNotBlank() }?.let { Uri.parse(it) }
+                                    )
+                                }
+                            )
+                        }
+                    ) { Text("Choose sound") }
+
+                    Text(
+                        ringtoneTitle(context, ringtone),
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 6.dp)
+                    )
+                }
+                if (mode == SoundMode.BOTH) {
+                    Text(
+                        "Plays the sound, then speaks your text, over and over.",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(top = 4.dp)
+                    )
+                }
+
+                Spacer(Modifier.height(18.dp))
                 Text("Repeat", fontSize = 14.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(8.dp))
 
@@ -478,7 +567,9 @@ private fun AlarmEditor(
                                     minute = minute,
                                     text = text.trim(),
                                     enabled = true,
-                                    days = days
+                                    days = days,
+                                    soundMode = mode,
+                                    ringtoneUri = ringtone
                                 )
                             )
                         }
@@ -548,4 +639,12 @@ private fun openBatterySettings(context: Context) {
             context.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
         }
     }
+}
+
+/** Human-readable name for a picked sound, for the line under the button. */
+private fun ringtoneTitle(context: Context, uri: String): String {
+    if (uri.isBlank()) return "Using your phone's default alarm sound"
+    return runCatching {
+        RingtoneManager.getRingtone(context, Uri.parse(uri))?.getTitle(context)
+    }.getOrNull() ?: "Selected sound"
 }

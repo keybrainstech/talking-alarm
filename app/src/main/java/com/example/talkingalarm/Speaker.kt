@@ -3,42 +3,62 @@ package com.example.talkingalarm
 import android.content.Context
 import android.media.AudioAttributes
 import android.speech.tts.TextToSpeech
-import java.util.Locale
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
 
-/** One-shot preview so you can hear how an alarm will sound while editing it. */
+/**
+ * Shared preview engine used by the editor and the settings screen, so you can hear a
+ * voice before committing to it. The alarms themselves each build their own engine.
+ */
 object Speaker {
 
-    private var tts: TextToSpeech? = null
-    private var pending: String? = null
+    private val _voices = MutableStateFlow<List<VoiceOption>>(emptyList())
+    val voices: StateFlow<List<VoiceOption>> = _voices.asStateFlow()
 
-    fun preview(context: Context, text: String) {
-        val sentence = if (text.isBlank()) "Alarm" else text
-        val engine = tts
-        if (engine != null) {
-            engine.speak(sentence, TextToSpeech.QUEUE_FLUSH, null, "preview")
-            return
-        }
-        pending = sentence
+    private var tts: TextToSpeech? = null
+    private var ready = false
+    private var pending: (() -> Unit)? = null
+
+    /** Safe to call repeatedly; sets up the engine the first time. */
+    fun warmUp(context: Context) {
+        if (tts != null) return
         tts = TextToSpeech(context.applicationContext) { status ->
             if (status != TextToSpeech.SUCCESS) return@TextToSpeech
-            tts?.apply {
-                setAudioAttributes(
-                    AudioAttributes.Builder()
-                        .setUsage(AudioAttributes.USAGE_MEDIA)
-                        .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                        .build()
-                )
-                val result = setLanguage(Locale.getDefault())
-                if (result == TextToSpeech.LANG_MISSING_DATA ||
-                    result == TextToSpeech.LANG_NOT_SUPPORTED
-                ) {
-                    setLanguage(Locale.US)
-                }
-                setSpeechRate(0.95f)
-                pending?.let { speak(it, TextToSpeech.QUEUE_FLUSH, null, "preview") }
-                pending = null
-            }
+            tts?.setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
+                    .build()
+            )
+            ready = true
+            _voices.value = tts?.listUsableVoices() ?: emptyList()
+            pending?.invoke()
+            pending = null
         }
+    }
+
+    /** Speaks using whatever voice is saved in settings. */
+    fun preview(context: Context, text: String) {
+        preview(context, text, VoicePrefs.load(context))
+    }
+
+    /** Speaks using the given settings, without saving them. */
+    fun preview(context: Context, text: String, settings: VoiceSettings) {
+        val sentence = if (text.isBlank()) "This is how your alarm will sound" else text
+        val action = {
+            tts?.applyVoiceSettings(settings)
+            tts?.speak(sentence, TextToSpeech.QUEUE_FLUSH, null, "preview")
+            Unit
+        }
+        if (ready) action() else {
+            pending = action
+            warmUp(context)
+        }
+    }
+
+    fun stop() {
+        runCatching { tts?.stop() }
     }
 
     fun release() {
@@ -47,5 +67,6 @@ object Speaker {
             tts?.shutdown()
         }
         tts = null
+        ready = false
     }
 }

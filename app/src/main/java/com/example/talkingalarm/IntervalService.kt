@@ -22,7 +22,6 @@ import android.speech.tts.TextToSpeech
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import kotlinx.coroutines.flow.MutableStateFlow
-import java.util.Locale
 import kotlin.math.ceil
 
 /**
@@ -210,11 +209,7 @@ class IntervalService : Service(), TextToSpeech.OnInitListener {
                 .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
                 .build()
         )
-        val result = engine.setLanguage(Locale.getDefault())
-        if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
-            engine.setLanguage(Locale.US)
-        }
-        engine.setSpeechRate(1.0f)
+        engine.applyVoiceSettings(VoicePrefs.load(this))
         ttsReady = true
     }
 

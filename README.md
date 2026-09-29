@@ -15,6 +15,25 @@ one is for, and at that time the phone speaks your text out loud instead of just
   with vibration. Survives Doze and reboots.
 - "Hear it" button so you can preview the message while writing it.
 
+## Sound options
+
+Each alarm picks how it wakes you, in the editor under "Sound":
+
+- **Speak my text** — reads your note aloud, on repeat. The original behaviour.
+- **Ringtone** — plays a sound from your phone instead, chosen with "Choose sound".
+  The picker lists your system alarm sounds and ringtones, plus any audio you've added.
+- **Both** — plays the sound for five seconds, speaks your text, and alternates.
+
+The **Voice** tab controls how the speaking sounds, for alarms and the timer alike.
+It lists every voice your phone's speech engine has installed for your language; tap one
+to use it, or the play icon to hear it first. Speed and pitch sliders sit underneath.
+
+Most phones ship with two or three voices. To get more, use the "Open speech settings"
+button at the bottom of that tab: choose your engine (Google's is the usual one), then
+install additional voice data or another language. Anything you add there shows up in the
+app's list straight away. Installing the Google Speech Services app from the Play Store
+also tends to add several.
+
 ## Interval timer
 
 The second tab is a repeating timer for workouts and anything else on a fixed rhythm.
@@ -30,9 +49,15 @@ say each time, and press Start. It beeps, then speaks, every time the gap elapse
 ## Updating an app you already installed
 
 Upload the new project files over the old ones in your GitHub repository (same
-**Add file → Upload files** page, drag the contents in, Commit changes). The build runs
+**Add file → Upload files** page, drag the folders in, Commit changes). The build runs
 again on its own and replaces the APK in Releases. Download and install it the same way —
 Android updates the existing app and your saved alarms stay put.
+
+The project carries its own signing key at `app/keystore.jks`, which is why updates install
+cleanly over each other. Without it, every cloud build would use a randomly generated key
+and Android would reject the update with "App not installed". The key's password sits in
+`app/build.gradle.kts` in plain sight: deliberate, and fine for an app only you install,
+but you would never do this for something published to the Play Store.
 
 ## Getting the APK without installing Android Studio
 

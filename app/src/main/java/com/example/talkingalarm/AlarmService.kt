@@ -9,6 +9,9 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
 import android.media.AudioManager
+import android.media.MediaPlayer
+import android.media.RingtoneManager
+import android.net.Uri
 import android.media.ToneGenerator
 import android.os.Build
 import android.os.Bundle
@@ -24,7 +27,6 @@ import android.speech.tts.UtteranceProgressListener
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import kotlinx.coroutines.flow.MutableStateFlow
-import java.util.Locale
 
 /**
  * Runs while an alarm is going off: speaks the alarm text on a loop through the
@@ -45,6 +47,7 @@ class AlarmService : Service(), TextToSpeech.OnInitListener {
         private const val NOTIFICATION_ID = 7301
         private const val AUTO_STOP_MS = 5 * 60 * 1000L
         private const val GAP_BETWEEN_REPEATS_MS = 1500L
+        private const val RING_BEFORE_SPEECH_MS = 5000L
     }
 
     private val handler = Handler(Looper.getMainLooper())
@@ -54,6 +57,7 @@ class AlarmService : Service(), TextToSpeech.OnInitListener {
     private var wakeLock: PowerManager.WakeLock? = null
     private var previousAlarmVolume: Int? = null
     private var vibrator: Vibrator? = null
+    private var ringtonePlayer: MediaPlayer? = null
     private var stopping = false
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -87,9 +91,20 @@ class AlarmService : Service(), TextToSpeech.OnInitListener {
         startInForeground(current)
         keepAwake()
         raiseAlarmVolume()
-        playAttentionTone()
         startVibrating()
-        startSpeaking()
+
+        when (current.soundMode) {
+            SoundMode.SPEECH -> {
+                playAttentionTone()
+                startSpeaking()
+            }
+            SoundMode.RINGTONE -> startRingtone(current)
+            SoundMode.BOTH -> {
+                startRingtone(current)
+                startSpeaking()
+            }
+        }
+
         openRingScreen()
 
         handler.postDelayed({ shutdown() }, AUTO_STOP_MS)
@@ -113,16 +128,12 @@ class AlarmService : Service(), TextToSpeech.OnInitListener {
                 .build()
         )
 
-        val result = engine.setLanguage(Locale.getDefault())
-        if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
-            engine.setLanguage(Locale.US)
-        }
-        engine.setSpeechRate(0.95f)
+        engine.applyVoiceSettings(VoicePrefs.load(this))
 
         engine.setOnUtteranceProgressListener(object : UtteranceProgressListener() {
             override fun onStart(utteranceId: String?) = Unit
             override fun onDone(utteranceId: String?) {
-                handler.postDelayed({ speakOnce() }, GAP_BETWEEN_REPEATS_MS)
+                scheduleNextSpeech()
             }
             @Deprecated("Required by the base class")
             override fun onError(utteranceId: String?) = Unit
@@ -132,8 +143,24 @@ class AlarmService : Service(), TextToSpeech.OnInitListener {
         handler.postDelayed({ speakOnce() }, 900)
     }
 
+    /** After each sentence: either pause and repeat, or let the ringtone play for a while. */
+    private fun scheduleNextSpeech() {
+        if (stopping) return
+        if (alarm?.soundMode == SoundMode.BOTH) {
+            resumeRingtone()
+            handler.postDelayed({
+                pauseRingtone()
+                speakOnce()
+            }, RING_BEFORE_SPEECH_MS)
+        } else {
+            handler.postDelayed({ speakOnce() }, GAP_BETWEEN_REPEATS_MS)
+        }
+    }
+
     private fun speakOnce() {
         if (stopping || !ttsReady) return
+        if (alarm?.soundMode == SoundMode.RINGTONE) return
+        pauseRingtone()
         val a = alarm ?: return
         val body = if (a.text.isBlank()) "Alarm" else a.text
         val sentence = "It's ${a.timeText()}. $body"
@@ -144,6 +171,51 @@ class AlarmService : Service(), TextToSpeech.OnInitListener {
     }
 
     // ---------- audio, vibration, wake ----------
+
+    private fun startRingtone(a: Alarm) {
+        val uri: Uri? = if (a.ringtoneUri.isNotBlank()) {
+            runCatching { Uri.parse(a.ringtoneUri) }.getOrNull()
+        } else {
+            RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+                ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+        } ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_RINGTONE)
+
+        if (uri == null) return
+        runCatching {
+            ringtonePlayer = MediaPlayer().apply {
+                setAudioAttributes(
+                    AudioAttributes.Builder()
+                        .setUsage(AudioAttributes.USAGE_ALARM)
+                        .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                        .build()
+                )
+                setDataSource(this@AlarmService, uri)
+                isLooping = true
+                prepare()
+                start()
+            }
+        }.onFailure {
+            // Unreadable sound (deleted file, missing permission): fall back to speaking.
+            ringtonePlayer = null
+            if (!ttsReady) startSpeaking()
+        }
+    }
+
+    private fun pauseRingtone() {
+        runCatching { if (ringtonePlayer?.isPlaying == true) ringtonePlayer?.pause() }
+    }
+
+    private fun resumeRingtone() {
+        runCatching { if (ringtonePlayer?.isPlaying == false) ringtonePlayer?.start() }
+    }
+
+    private fun stopRingtone() {
+        runCatching {
+            ringtonePlayer?.stop()
+            ringtonePlayer?.release()
+        }
+        ringtonePlayer = null
+    }
 
     private fun playAttentionTone() {
         runCatching {
@@ -271,6 +343,7 @@ class AlarmService : Service(), TextToSpeech.OnInitListener {
             tts?.shutdown()
         }
         tts = null
+        stopRingtone()
         runCatching { vibrator?.cancel() }
         restoreAlarmVolume()
         runCatching { if (wakeLock?.isHeld == true) wakeLock?.release() }
